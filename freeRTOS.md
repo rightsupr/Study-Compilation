@@ -222,7 +222,7 @@ RTOS有三类链表，对于第一类又有很多个链表。他从上往下找�
 
 当写队列的时候，除了要写数据，还要Wake up
 
-怎么Wake up呢？就是从Queue.list中去唤醒
+怎么Wake up呢？就是从Queue.list中去唤醒       有两个链表：list for Receive ；list for send
 
 是由于，比如读数据的时候发现队列是空的，那么就要要休眠，不仅仅是把自己这个任务从ReadyList移动到DelayList里，还要把自己放在Queue.list里，这样其他的任务列入写数据的时候才知道唤醒他。
 
@@ -377,3 +377,156 @@ BaseType_t xQueueOverwriteFromISR(
 3、限制窥视操作，可以通过逻辑控制确保窥视的频率低于数据移除的频率。
 
 4、采用事件通知（task notification）或直接共享内存区域，不完全依赖队列的方法
+
+
+
+接下来提到信号量和互斥量，虽然都是队列的变体，但是功能截然不同
+
+*信号量像是一种通信的工具，用于同步*
+
+*互斥量似乎作为一种资源的锁定，只有拿到这个令牌，才能对资源进行访问，访问完还需要归还资源*
+
+### 信号量
+
+特殊的队列，看可用的资源有多少，队列保护里面的val，信号量保护计数值，避免被同时调用
+
+1、保护
+
+2、休眠-唤醒（在处理进入和退出函数时候）
+
+信号量分为两种**二值信号量**与**计算型信号量**，其中前者被创建时初始值为 0，后者被创建时初始值可以设定
+
+#### 二值信号量
+
+队列长度为1，uxMessagesWaiting只有0和1两种状态(就是队列空与队列满两种情况)
+
+- `uxMessagesWaiting` 为 0 表示：信号量资源被获取了.
+- `uxMessagesWaiting` 为 1 表示：信号量资源被释放了
+
+所有用到了队列的阻塞机制，当队列里有值的时候，生产者并不阻塞，但是返回失败；而消费者当队列里没有值的时候就阻塞，即当`uxMessagesWaiting` 为 0 表示，任务阻塞
+
+``` c
+// 任务一
+void Task1Function(void *param)
+{
+	volatile int i = 0;
+	while (1)  {
+		for (i = 0; i < 10000000; ++i) {
+			sumj++;
+		}
+	
+		// 等待 sum 计算完成释放信号量，信号量计数值 uxMessagesWaiting 加 1
+		xSemaphoreGive(xSemcalc); 
+		vTaskDelete(NULL);
+	}
+}
+
+// 任务二
+void Task2Function(void *param)
+{
+	while (1) {
+		flagCalcEnd = 0;
+		
+		// 若 sum 未计算完成，则获取信号量失败，任务会进入阻塞状态，其他任务得以调度
+		// 若 sum 计算完成（信号量为 1），则任务被唤醒 sum 得以打印
+		xSemaphoreTake(xSemcalc, portMAX_DELAY);
+		flagCalcEnd = 1;
+		printf("sum = %d\r\n", sum);
+	}
+}
+```
+
+#### 计数信号值
+
+二值信号量常用于同步，计数值信号量常用于事件计数、资源管理
+
+**应用场景：**
+
+事件计数：
+
+每次事件发生后，在事件处理函数中释放计数型信号量（计数型信号量的资源数加 1），其他等待事件发生的任务获取计数型信号量（计数型信号量的资源数减 1），这种场景下，计数型信号量的资源数一般在创建时设置为 0。
+
+资源管理：
+
+计数型信号量的资源数代表着共享资源的可用数量，一个任务想要访问共享资源，就必须先获取这个共享资源的计数型信号量，之后在成功获取了计数型信号量之后，才可以对这个共享资源进行访问操作，当然，在使用完共享资源后也要释放这个共享资源的计数型信号量。在这种场合下，计数型信号量的资源数一般在创建时设置为受其管理的共享资源的**最大可用数量**。
+
+#### 信号量函数
+
+```c
+//创建
+xSemaphoreCreateBinary //二值     xSemaphoreCreateBinaryStatic
+xSemaphoreCreateCounting  //计数    xSemaphoreCreateCountingStatic
+//删除
+void vSemaphoreDelete( SemaphoreHandle_t xSemaphore );
+//give/take
+xSemaphoreGive   xSemaphoreTake   //give需要释放信号量，take需要重置为0或者-去
+
+```
+
+### 互斥量
+
+互斥量又称互斥信号量（本质是信号量），是一种特殊的二值信号量，它和信号量不同的是，它支持**互斥量所有权、递归访问以及防止优先级翻转**的特性，用于实现对临界资源的独占式处理。
+
+任意时刻互斥量的状态只有两种，**开锁或闭锁**。
+
+从过程来说，互斥锁可以被视为一个与正在共享的资源相关联的令牌，对于合法访问资源的任务，它必须首先成功 “获取” 令牌，成为资源的持有者，当持有者完成对资源的访问之后，其需要 ”归还” 令牌，只有 “归还” 令牌之后，该令牌才可以再次被其他任务所 “获取” ，这样保证了互斥的对共享资源的访问
+
+#### 递归互斥量
+
+*可能带来死锁现象* 例如：
+
+任务 A 执行并成功获取互斥量 X
+任务 A 被任务 B 抢占
+任务 B 在尝试获取互斥量 X 之前成功获取互斥量 Y，但互斥量 X 由任务 A 持有，因此对任务 B 不可用，任务 B 选择进入阻塞状态等待互斥量 X 被释放
+任务 A 继续执行，它尝试获取互斥量 Y，但互斥量 Y 由任务 B 持有，所以对于任务 A 来说是不可用的，任务 A 选择进入阻塞状态等待待释放的互斥量 Y
+
+或者自锁 例如：
+
+任务成功获取互斥锁
+
+在持有互斥体的同时，任务调用库函数
+
+库函数的实现尝试获取相同的互斥锁，并进入阻塞状态等待互斥锁变得可用
+
+这就用到**递归互斥体**，同一任务可以多次 “获取” 递归互斥锁，并且只有在每次 “获取” 递归互斥锁之后都调用一次 “释放” 递归互斥锁，才会返回该互斥锁。一个互斥量被一个任务获取之后就不能再次获取，其他任务想要获取该互斥量必须等待这个任务释放该互斥连，但是递归互斥量可以被一个任务重复获取多次，当然每次获取必须与一次释放配对使用。
+
+#### 优先级反转和优先级继承问题
+
+使用二值信号量用于进程间同步时可能会出现优先级反转的问题，高优先级的反而最后执行了。举一下例子
+
+在 t1 时刻，低优先级的任务 TaskLP 切入运行状态，并且获取到了一个二值信号量
+在 t2 时刻，高优先级的任务 TaskHP 请求获取二值信号量，但是由于 TaskLP 还未释放该二值信号量，所以在 t3 时刻，任务 **TaskHP 进入阻塞状态等待二值信号量被释放**
+在 t4 时刻，**中等优先级的任务 TaskMP** 进入就绪状态，由于**不需要获取二值信号量**，因此**抢占**低优先级任务任务 TaskLP 切入运行状态
+在 t5 时刻，任务 TaskMP 运行结束，任务 TaskLP 再次切入运行状态
+在 t6 时刻，任务 TaskLP 运行结束，释放二值信号量，此时任务 TaskHP 从等待二值信号量的阻塞状态切入运行状态
+在 t7 时刻，任务 TaskHP 运行结束
+![互斥量1](image/互斥量1.png)
+
+但是使用**优先级继承问题**会暂时升级低优先级的优先级，让他不被抢断，而去执行
+
+在 t1 时刻，低优先级的任务 TaskLP 切入运行状态，并且获取到了一个互斥量
+在 t2 时刻，高优先级的任务 TaskHP 请求获取互斥量，但是由于 TaskLP 还未释放该互斥量，所以在 t3 时刻，任务 TaskHP 进入阻塞状态等待互斥量被释放，但是与二值信号量不同的是，此时 FreeRTOS 将任务 TaskLP 的优先级临时提高到与任务 TaskHP 一致的优先级，也即高优先级
+在 t4 时刻，中等优先级的任务 TaskMP 进入就绪状态发生任务调度，但是由于任务 TaskLP 此时优先级被提高到了高优先级，因此任务 TaskMP 仍然保持就绪状态等待优先级较高的任务执行完毕
+在 t5 时刻，任务 TaskLP 执行完毕释放互斥量，此时任务 TaskHP 抢占处理器切入运行状态，并恢复任务 TaskLP 原来的优先级
+在 t6 时刻，任务 TaskHP 执行完毕，此时轮到任务 TaskMP 执行
+在 t7 时刻，任务 TaskMP 运行结束
+![互斥量2](image/互斥量2.png)
+
+#### 互斥量函数
+
+```c
+//创建
+SemaphoreHandle_t xSemaphoreCreateMutex(void);
+SemaphoreHandle_t xSemaphoreCreateMutexStatic(StaticSemaphore_t *pxMutexBuffer);
+SemaphoreHandle_t xSemaphoreCreateRecursiveMutex(void);
+SemaphoreHandle_t xSemaphoreCreateRecursiveMutex(StaticSemaphore_t pxMutexBuffer);
+//获取互斥量
+BaseType_t xSemaphoreTake(SemaphoreHandle_t xSemaphore, TickType_t xTicksToWait);
+BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t xMutex,TickType_t xTicksToWait);
+//释放互斥量
+BaseType_t xSemaphoreGive(SemaphoreHandle_t xSemaphore);
+BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t xMutex);
+//删除互斥量
+void vSemaphoreDelete(SemaphoreHandle_t xSemaphore);
+```
+
