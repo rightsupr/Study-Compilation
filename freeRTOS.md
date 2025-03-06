@@ -12,6 +12,24 @@
 char heap_buf[1024];
 ```
 
+``` int* p = (int*)malloc(4);
+int* p = (int*)malloc(4);
+//int* 表示“指向 int 类型数据的指针 ,p 是一个变量，它保存的是“某个 int 类型数据在内存中的地址
+= (int*)malloc(4); //malloc(4) 会向操作系统请求 4 个字节的连续内存空间
+```
+
+使用后需要释放内存 free(p);
+
+```
+p = (int*)calloc(4, 1);
+//calloc(4, 1) 会分配 4 字节的连续内存，并且将这 4 字节初始化为 0。它与 malloc 的区别主要在于，calloc 会在分配内存后自动将其清零。
+//若要分配4个int，一般会用 calloc(4, sizeof(int))
+```
+
+
+
+
+
 ### 栈
 
 与堆相比，是不被程序员所规定的
@@ -180,3 +198,182 @@ RTOS有三类链表，对于第一类又有很多个链表。他从上往下找�
 
 ### 队列
 
+#### 队列的实现与第一个好处
+
+就上面的例子而言，那我是不是可以不让多人写。
+
+有的xd，有的。引入一个环形缓冲区
+
+![队列1](image/队列1.png)
+
+进队列，就是进队列函数了
+
+![队列2](image/队列2.png)
+
+比如任务a，进入队列函数，如何先关闭中断，大家都不许运行了，变成好像裸机开发了，然后做完后，开中断
+
+![队列3](image/队列3.png)
+
+队列操作函数不用自己写，直接掉调用这个写队列函数就行了
+
+#### 队列的第二个好处
+
+休眠唤醒机制，就是下面提到的队列[阻塞访问](#阻塞访问)
+
+当写队列的时候，除了要写数据，还要Wake up
+
+怎么Wake up呢？就是从Queue.list中去唤醒
+
+是由于，比如读数据的时候发现队列是空的，那么就要要休眠，不仅仅是把自己这个任务从ReadyList移动到DelayList里，还要把自己放在Queue.list里，这样其他的任务列入写数据的时候才知道唤醒他。
+
+消息队列**核心：关中断、链表操作、环形缓冲区**
+
+环形缓冲区就是读写都有个指针，比如写就是下面的方法
+
+```c 
+buf[w]=val;
+w=(w+1)%len
+```
+
+通过这种方式，每次到走到队尾，又会回到队头，实现**先进先出**
+
+这就是下面提到的数据存储的核心
+
+#### 数据储存
+
+一个队列能保存有限数量的固定大小的数据单元。一个队列能保存单元的最大数量叫做 “长度”。每个队列数据单元的长度与大小是在创建队列时设置的。队列通常是一个先入先出（[FIFO](https://so.csdn.net/so/search?q=FIFO&spm=1001.2101.3001.7020)）的环形缓冲区
+
+#### 传输数据的两种方法
+
+- 拷贝：把数据、把变量的值复制进队列里
+- 引用：把数据、把变量的地址复制进队列里
+
+#### 队列的阻塞访问
+
+<a id="阻塞访问"></a>
+
+就比如当读取空队列，发现没数据，读写不成功，就阻塞。这其中可以指定超时时间；同样的，当队列满了，写入失败了，也会阻塞，同样可以指定超时时间。
+
+以读取队列为例，如果队列有数据了，则该阻塞的任务会变为就绪态。**如果一直都没有数据，则时间到之后它也会进入就绪态。**
+
+` 那么，既然已经有一种方式，即“队列有数据就进入就绪态”还需要超时时间干嘛? `
+
+ 答：避免任务长时间“死等”,系统可以做一些其他的处理方式，例如重新初始化，或者提醒开发者作排查
+
+`那么，如果队列中有数据后，谁会优先进入就绪态呢？`  
+
+1、优先级最高的任务
+
+2、如果优先级一样，则等待时间最久的任务先进入就绪态
+
+#### 队列函数：
+
+##### 创建
+
+分为动态分配内存、静态分配内存
+
+动态分配内存：`xQueueCreate` 队列的内存在函数内部动态分配
+
+```c
+QueueHandle_t xQueueCreate( UBaseType_t uxQueueLength, UBaseType_t uxItemSize );
+```
+
+静态分配内存：`xQueueCreateStatic`，队列的内存要事先分配好
+
+```c
+QueueHandle_t xQueueCreateStatic(
+							UBaseType_t uxQueueLength,
+							UBaseType_t uxItemSize,
+							uint8_t *pucQueueStorageBuffer,
+							StaticQueue_t *pxQueueBuffer
+						);
+```
+
+​        **复位**      队列刚被创建时，里面没有数据；使用过程中可以调用 xQueueReset() 把队列恢复为初始状态，此函数原型为：
+
+``` c
+BaseType_t xQueueReset( QueueHandle_t pxQueue);
+```
+
+##### 删除
+
+删除队列的函数为 `vQueueDelete()` ，只能删除使用**动态方法**创建的队列，它会释放内存
+
+``` c
+void vQueueDelete( QueueHandle_t xQueue );
+```
+
+##### 写队列
+
+可以把数据写到队列头部，也可以写到尾部。较为普遍的使用是下面的xQueueSend()   *往队列尾部写入数据*
+
+``` c
+BaseType_t xQueueSend(
+				QueueHandle_t xQueue,
+				const void *pvItemToQueue,
+				TickType_t xTicksToWait
+			);
+```
+
+另外xQueueSendToBack  xQueueSendToBackFromISR  xQueueSendToFront  xQueueSendToFrontFromISR
+
+##### 读队列
+
+使用 `xQueueReceive()` 函数读队列，读到一个数据后，队列中该数据会被**移除**。
+
+```c
+BaseType_t xQueueReceive( QueueHandle_t xQueue,
+					void * const pvBuffer,
+					TickType_t xTicksToWait );
+
+BaseType_t xQueueReceiveFromISR(
+							QueueHandle_t xQueue,
+							void *pvBuffer,
+							BaseType_t *pxTaskWoken
+						);
+```
+
+##### 查询
+
+可以查询队列中有多少个数据、有多少空余空间。
+
+``` c
+* 返回队列中可用数据的个数
+UBaseType_t uxQueueMessagesWaiting( const QueueHandle_t xQueue );
+* 返回队列中可用空间的个数
+UBaseType_t uxQueueSpacesAvailable( const QueueHandle_t xQueue );
+```
+
+##### 覆盖/偷看
+
+这与上面的读队列的方法不同，偷看的方法实现了多方数据共享，都可以读这个队列，所以读完不删除数据。
+
+```c 
+/* 覆盖队列
+* xQueue: 写哪个队列
+* pvItemToQueue: 数据地址
+* 返回值: pdTRUE表示成功, pdFALSE表示失败
+*/
+BaseType_t xQueueOverwrite(
+					QueueHandle_t xQueue,
+					const void * pvItemToQueue
+				);
+
+BaseType_t xQueueOverwriteFromISR(
+							QueueHandle_t xQueue,
+							const void * pvItemToQueue,
+							BaseType_t *pxHigherPriorityTaskWoken
+						);
+```
+
+但是由于不删除数据，如果不做处理，就会导致队列数据阻塞，导致发送任务进入阻塞状态。
+
+应对措施：
+
+1、定期清理队列数据，使用receive移除已经被窥看过的数据。
+
+2、动态调整队列长度，通过`uxQueueSpacesAvailable()`可以随时监控队列的可用空间，动态调整运行逻辑
+
+3、限制窥视操作，可以通过逻辑控制确保窥视的频率低于数据移除的频率。
+
+4、采用事件通知（task notification）或直接共享内存区域，不完全依赖队列的方法
