@@ -530,3 +530,322 @@ BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t xMutex);
 void vSemaphoreDelete(SemaphoreHandle_t xSemaphore);
 ```
 
+### 事件组
+
+事件组可以简单地认为就是一个整数。每一位表示一个事件，每一位事件的含义由程序员决定，比如：Bit0 表示用来串口是否就绪，Bit1 表示按键是否被按下。这些位，值为 1 表示事件发生了，值为 0 表示事件没发生。
+
+事件组用一个整数来表示，其中的高 8 位留给内核使用，只能用其他的位来表示事件。这个整数的位数由宏 `configUSE_16_BIT_TICKS` 决定：
+
+- 如果 `configUSE_16_BIT_TICKS` 是 1，那么这个整数就是 16 位的，低 8 位用来表示事件
+- 如果 `configUSE_16_BIT_TICKS` 是 0，那么这个整数就是 32 位的，低 24 位用来表示事件
+
+例如：事件组的值为 0x92，即事件位1、4、7为1，因此仅发生由位1、4、7表示的事件，如下图：
+
+![事件组1](image/事件组1.png)
+
+#### 与事件组和队列、信号量的对比
+
+唤醒谁？
+
+- 队列、信号量：事件发生时，只会唤醒一个任务
+- 事件组：事件发生时，会唤醒所有符合条件的任务，简单地说它有"广播"的作用
+
+是否清除事件？
+
+- 队列、信号量：是消耗型的资源，队列的数据**被读走就没了**；信号量**被获取后就减少了**
+- 事件组：被唤醒的任务有两个选择，**可以让事件保留不动，也可以清除事件**
+
+#### 事件的应用场景
+
+事件用于事件类型的通讯，无数据传输，也就是说，我们可以用事件来做 标志位，判断某些事件是否发生了，然后根据结果做处理，那很多人又会问了，为什么我 不直接用变量做标志呢，岂不是更好更有效率？非也非也，若是在裸机编程中，用全局变 量是最为有效的方法，这点我不否认，但是在操作系统中，使用全局变量就要考虑以下问 题了：
+
+ 如何对全局变量进行保护呢，如何处理多任务同时对它进行访问？
+
+      如何让内核对事件进行有效管理呢？使用全局变量的话，就需要在任务中轮询查 看事件是否发送，这简直就是在浪费 CPU 资源啊，还有等待超时机制，使用全局 变量的话需要用户自己去实现。
+
+所以，在操作系统中，还是使用操作系统给我们提供的通信机制就好了，简单方便还实用。
+
+#### 唤醒机制
+
+事件唤醒机制，当任务因为等待某个或者多个事件发生而进入阻塞态，当事件发生的 时候会被唤醒，其过程具体见下图
+
+![事件组2](image/事件组2.png)
+
+#### 事件组函数
+
+[FreeRTOS事件组 基于STM32_件 位-CSDN博客](https://blog.csdn.net/qq_61672347/article/details/125612201?spm=1001.2014.3001.5502)
+
+包括他最后提到的事件实验例子
+
+### 任务通知
+
+每个任务都有 一个 32 位 的通知值，在大多数情况下，任务通知可以 替代二值信号量、计数信号量、事件组，也可以替代长度为 1 的队列（可以保存一个 32 位整数或指针值）。
+
+相对于以前使用 `FreeRTOS` 内核通信的资源，必须创建队列、二进制信号量、计数信号量或事件组的情况，使用**任务通知显然更灵活**。
+
+***使用前提：***想要使用任务通知，必须将 `FreeRTOSConfig.h` 中的宏定义 `configUSE_TASK_NOTIFICATIONS` 设置为 1，其实`FreeRTOS` 默认是为 1 的，所以任务通知是**默认使能**的。
+
+#### 几种方式发送通知
+
+- 发送通知给任务， 如果有通知未读，不覆盖通知值。
+- 发送通知给任务，直接覆盖通知值。
+- 发送通知给任务，设置通知值的一个或者多个位 ，可以当做事件组来使用。
+- 发送通知给任务，递增通知值，可以当做计数信号量使用。
+
+通过对以上任务通知方式的合理使用，可以在一定场合下替代 `FreeRTOS` 的信号量，队列、事件组等。
+
+#### 任务的通知的优势
+
+| **类别** |         **要点**         |                         **详细说明**                         |
+| :------: | :----------------------: | :----------------------------------------------------------: |
+| **优势** |       **效率更高**       | 直接通过任务结构体传递数据或事件，无需中间数据结构（如队列、信号量），减少上下文切换开销。 |
+|          |      **更节省内存**      | 无需额外创建队列、信号量等结构体，仅利用任务自带的 `ulNotifiedValue` 字段。 |
+| **限制** |  **不能发送数据给 ISR**  | ISR 没有任务结构体，无法接收任务通知；但 ISR 可发送通知给任务（如 `xTaskNotifyFromISR`）。 |
+|          | **数据只能给该任务独享** |  每个任务通知只能指定一个接收任务，无法实现多任务共享数据。  |
+|          |     **无法缓冲数据**     | 仅保存最新通知值，旧数据会被覆盖（类似邮箱，但无队列缓冲）。 |
+|          |  **无法广播给多个任务**  |             无法一次性通知多个任务，需逐个发送。             |
+|          |  **发送方无法阻塞等待**  | 若接收方未及时处理通知，发送方无法进入阻塞状态等待，需主动重试或丢弃数据。 |
+
+就上面而言的更节省内存，每个任务本身就有一个TCB（***Task Control Block***），里面有 2 个成员：
+
+- 一个是 uint8_t 类型，用来表示通知状态 下面提到的三种状态
+- 一个是 uint32_t 类型，用来表示通知值 
+
+```c
+typedef struct tskTaskControlBlock
+{
+	......
+	/* configTASK_NOTIFICATION_ARRAY_ENTRIES = 1 */
+	volatile uint32_t ulNotifiedValue[ configTASK_NOTIFICATION_ARRAY_ENTRIES ];
+	volatile uint8_t ucNotifyState[ configTASK_NOTIFICATION_ARRAY_ENTRIES ];
+	......
+} tskTCB;
+```
+
+#### 通知的三种取值
+
+自上而下分别是三种状态： 
+
+没有在等待通知、任务在等待通知、任务接收到了通知，也被称为 pending(有数据了，待处理)
+
+``` c
+#define taskNOT_WAITING_NOTIFICATION ( ( uint8_t ) 0 ) /* 也是初始状态 */
+#define taskWAITING_NOTIFICATION ( ( uint8_t ) 1 )
+#define taskNOTIFICATION_RECEIVED ( ( uint8_t ) 2 )
+```
+
+通知值可以有很多种类型：
+
+- 计数值
+- 位(类似事件组)
+- 任意数值
+
+#### 任务通知的使用
+
+|          | 简化版                                     | 专业版                             |
+| -------- | ------------------------------------------ | ---------------------------------- |
+| 发出通知 | `xTaskNotifyGive` `vTaskNotifyGiveFromISR` | `xTaskNotify` `xTaskNotifyFromISR` |
+| 取出通知 | `ulTaskNotifyTake`                         | `xTaskNotifyWait`                  |
+
+1、简化版：xTaskNotifyGive/ulTaskNotifyTake
+
+使用xTaskNotifyGive或vTaskNotifyGiveFromISR直接给其他任务发送通知
+
+- 使得通知值加一
+- 并使得通知状态变为"pending"，也就是 `taskNOTIFICATION_RECEIVED`，表示有数据了、待处理
+
+使用 `ulTaskNotifyTake` 函数来取出通知值
+
+- 如果通知值等于 0，则阻塞(可以指定超时时间)
+
+- 当通知值大于 0 时，任务从阻塞态进入就绪态
+
+- 在 `ulTaskNotifyTake` 返回之前，还可以做些清理工作：把通知值减一，或者把通知值清零
+
+  ``` c
+  /*
+   * xTaskToNotify : 任务句柄(创建任务时得到)，给哪个任务发通知
+   * 返回值 : 必定返回pdPASS
+   */
+  BaseType_t xTaskNotifyGive( TaskHandle_t xTaskToNotify );
+  
+  /*
+   * xTaskHandle : 任务句柄(创建任务时得到)，给哪个任务发通知
+   * pxHigherPriorityTaskWoken : 被通知的任务，可能正处于阻塞状态。此函数发出通知后，
+        会把它从阻塞状态切换为就绪态。如果被唤醒的任务的优先级，高于当前任务的优先级，则 
+        *pxHigherPriorityTaskWoken 被设置为pdTRUE，这表示在中断返回之前要进行任务切换。
+   */
+  void vTaskNotifyGiveFromISR( TaskHandle_t xTaskHandle, BaseType_t
+  						*pxHigherPriorityTaskWoken );
+  
+  /*
+   * xClearCountOnExit : 函数返回前是否清零：
+   *                    pdTRUE：把通知值清零
+   *                    pdFALSE：如果通知值大于0，则把通知值减一
+   * xTicksToWait : 任务进入阻塞态的超时时间，它在等待通知值大于0。
+   *                 0：不等待，即刻返回；
+   *                 portMAX_DELAY：一直等待，直到通知值大于0；
+   *                 其他值：Tick Count，可以用pdMS_TO_TICKS() 把ms转换为Tick Count
+   */
+  uint32_t ulTaskNotifyTake( BaseType_t xClearCountOnExit, TickType_t 
+  						  xTicksToWait
+  						);
+
+2、专业版：xTaskNotify/xTaskNotifyWait
+
+`xTaskNotify` 函数功能更强大，可以**使用不同参数实现各类功能**，比如：
+
+- 让接收任务的通知值加一：这时 xTaskNotify() 等同于 xTaskNotifyGive()
+
+- 设置接收任务的通知值的某一位、某些位，这就是一个轻量级的、更高效的**事件组**
+- 把一个新值写入接收任务的通知值：上一次的通知值被读走后，写入才成功。这就是轻量级的、**长度为1的队列**
+- 用一个新值覆盖接收任务的通知值：无论上一次的通知值是否被读走，覆盖都成功。类似 xQueueOverwrite() 函数，这就是**轻量级的邮箱**。
+
+使用 `xTaskNotifyWait()` 函数来取出任务通知。它比 `ulTaskNotifyTake()` 更复杂：
+
+- 可以让任务等待(可以加上超时时间)，等到任务状态为"pending"(也就是有数据)
+- 还可以在函数进入、退出时，清除通知值的**指定位**
+
+``` c
+/*
+ * xTaskToNotify：接收通知的任务句
+ * ulValue：用于更新接收任务通知的任务通知值，具体如何更新由形参 eAction 决定
+ * eAction：任务通知值更新方式，具体见下面表格
+ * 返回值：参数 eAction 为 eSetValueWithoutOverwrite 时，如果被通知任务还没取走上一个通知，
+ 		又接收到了一个通知，则这次通知值未能更新并返回 pdFALSE，而其他情况均返回 pdPASS
+ */
+BaseType_t xTaskNotify( TaskHandle_t xTaskToNotify, 
+						uint32_t ulValue,
+						eNotifyAction eAction );
+
+/*
+ * xTaskToNotify：接收通知的任务句
+ * ulValue：用于更新接收任务通知的任务通知值，具体如何更新由形参 eAction
+ * eAction：任务通知值更新方式，具体见下面表格
+ * pxHigherPriorityTaskWoken：在使用之前必须先初始化为 pdFALSE。当调用该函数发送一个任务通知时，
+   		目标任务接收到通知后将从阻塞态变为就绪态，并且如果其优先级比当前运行的任务的优先级高，
+   		那么 *pxHigherPriorityTaskWoken 会被设置为 pdTRUE，然后在中断退出前执行一次上下文切换，
+   		去执行刚刚被唤醒的中断优先级较高的任务。pxHigherPriorityTaskWoken 是一个可选的参数可以设置为 NULL
+ * 返回值：参数 eAction 为 eSetValueWithoutOverwrite 时，如果被通知任务还没取走上一个通知，
+ 		又接收到了一个通知，则这次通知值未能更新并返回 pdFALSE，而其他情况均返回 pdPASS
+ */
+BaseType_t xTaskNotifyFromISR( TaskHandle_t xTaskToNotify,
+						        uint32_t ulValue,
+								eNotifyAction eAction,
+								BaseType_t *pxHigherPriorityTaskWoken );
+
+/*
+ * ulBitsToClearOnEntry：ulBitsToClearOnEntry 表示在使用通知之前，将任务通知值的哪些位清 0，
+ 		实现过程就是将任务的通知值与参数 ulBitsToClearOnEntry 的按位取反值按位与操作。
+ 		如果 ulBitsToClearOnEntry 设置为 0x01，那么在函数进入前，任务通知值的位1会被清0，其他位保持不变。
+ 		如果 ulBitsToClearOnEntry 设置为 0xFFFFFFFF (ULONG_MAX)，那么在进入函数前任务通知值的所有位都
+ 		会被清 0，表示清零任务通知值
+ * pulNotificationValue：用于保存接收到的任务通知值。如果接收到的任务通知不需要使用，则设置为 NULL 即可。
+ 		这个通知值在参数 ulBitsToClearOnExit 起作用前将通知值拷贝到 *pulNotificationValue 中
+ * xTicksToWait：等待超时时间，单位为系统节拍周期。宏 pdMS_TO_TICKS 用于将单位毫秒转化为系统节拍数
+ * 返回值：如果获取任务通知成功则返回 pdTRUE，失败则返回 pdFALSE
+ */
+BaseType_t xTaskNotifyWait( uint32_t ulBitsToClearOnEntry,
+							uint32_t ulBitsToClearOnExit,
+							uint32_t *pulNotificationValue,
+							TickType_t xTicksToWait );
+```
+
+其中 `eAcrtion` 的取值有多种
+
+3、另外还有个xTaskNotifyAndQuery，与 `xTaskNotify()` 很像，都是调用通用的任务通知发送函数 `xTaskGenericNotify()` 来实现通知的发送，不同的是多了一个附加的参数 `pulPreviousNotifyValue` 用于回传接收任务的上一个通知值。
+
+### 软件定时器
+
+指定时间：启动定时器和运行回调函数，两者的间隔被称为定时器的周期（***period***）。
+
+指定类型，定时器有两种类型：指定要做什么事，就是指定回调函数
+
+- 一次性（***One-shot timers***）：
+  这类定时器启动后，它的回调函数只会被调用一次；
+  可以手工再次启动它，但是不会自动启动它。
+- 自动加载定时器（***Auto-reload timers***）：
+  这类定时器启动后，时间到之后它会自动启动它；
+  这使得回调函数被周期性地调用。
+
+指定要做什么事，就是指定回调函数
+
+状态：运行***Running***     冬眠***Dormant***
+
+定时器运行情况示例如下：
+
+Timer1：它是一次性的定时器，在 t1 启动，周期是 6 个Tick。经过 6 个 tick 后，在 t7 执行回调函数。它的回调函数只会被执行一次，然后该定时器进入冬眠状态。
+Timer2：它是自动加载的定时器，在 t1 启动，周期是 5 个 Tick。每经过 5 个 tick 它的回调函数都被执行，比如在 t6、t11、t16 都会执行。
+![软件定时器](image/软件定时器.png)
+
+```c
+//在 FreeRTOS 的配置上，如果要是用定时器就需要配置下面几个宏定义：
+//打开定时器
+#define configUSE_TIMERS                1
+
+//定时器的优先级
+#define configTIMER_TASK_PRIORITY       50
+
+//定时器栈大小
+#define configTIMER_TASK_STACK_DEPTH    50
+
+//定时器队列大小
+#define configTIMER_QUEUE_LENGTH        50
+```
+
+#### 守护任务
+
+软件定时器基于 Tick 来运行。但是，**在哪里执行定时器函数**呢？
+
+在某个任务里执行，这个任务就是：`RTOS Damemon Task`，`RTOS` 守护任务。以前被称为"Timer server"，但是这个任务要做并不仅仅是定时器相关，所以改名为：`RTOS Damemon Task`。
+
+当 `FreeRTOS` 的配置项 `configUSE_TIMERS` 被设置为 1 时，在启动调度器时，会自动创建 **`RTOS Damemon Task`。**
+
+故自己编写的任务函数要使用定时器时，是通过"定时器命令队列"（***timer command queue***）和守护任务交互
+
+![软件定时器2](image/软件定时器2.png)
+
+守护任务的**调度，跟普通的任务并无差别**。当守护任务是当前优先级最高的就绪态任务时，它就可以运行。它的工作有两类：
+
+- 处理命令：从命令队列里取出命令、处理
+- 执行定时器的回调函数
+
+#### 回调函数
+
+``` c
+void ATimerCallback( TimerHandle_t xTimer );
+```
+
+定时器的回调函数不要影响其他人：
+
+- 回调函数要尽快实行，不能进入阻塞状态
+- 不要调用会导致阻塞的API函数，比如 `vTaskDelay()`
+- 可以调用 `xQueueReceive()` 之类的函数，但是超时时间要设为 0：即刻返回，不可阻塞
+
+#### 软件定时器定时器的控制块
+
+```c
+    typedef struct tmrTimerControl                  /* The old naming convention is used to prevent breaking kernel aware debuggers. */
+    {
+        const char * pcTimerName;                   /*<< Text name.  This is not used by the kernel, it is included simply to make debugging easier. */ /*lint !e971 Unqualified char types are allowed for strings and single characters only. */
+        ListItem_t xTimerListItem;                  /*<< Standard linked list item as used by all kernel features for event management. */
+        TickType_t xTimerPeriodInTicks;             /*<< How quickly and often the timer expires. */
+        void * pvTimerID;                           /*<< An ID to identify the timer.  This allows the timer to be identified when the same callback is used for multiple timers. */
+        TimerCallbackFunction_t pxCallbackFunction; /*<< The function that will be called when the timer expires. */
+        #if ( configUSE_TRACE_FACILITY == 1 )
+            UBaseType_t uxTimerNumber;              /*<< An ID assigned by trace tools such as FreeRTOS+Trace */
+        #endif
+        uint8_t ucStatus;                           /*<< Holds bits to say if the timer was statically allocated or not, and if it is active or not. */
+    } xTIMER;
+typedef xTIMER Timer_t
+```
+
+#### 软件定时器的函数
+
+到这里为止，个人认为主要重要的是队列，和任务通知机制，互斥量
+
+队列可以作为传输数据的高效手段，让也数据不丢失
+
+任务通知机制实际可以完成上面的信息量、事件组工作
+
+但是软件定时器似乎作用不算太大，至少我用不着
